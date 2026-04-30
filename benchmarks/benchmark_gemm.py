@@ -7,8 +7,9 @@ from triton.testing import do_bench
 from quack.gemm import gemm as quack_gemm
 
 """
-GEMM benchmark using quack.gemm.gemm() (dense path) or the SM100 blockscaled
-path (MXFP8 / MXFP4 / NVFP4) via --blockscaled.
+GEMM benchmark using quack.gemm.gemm() (dense path) or the blockscaled
+path (MXFP8 / MXFP4 / NVFP4). The blockscaled path is selected by passing
+--sf_dtype and/or --sf_vec_size.
 
 Usage (dense):
     python benchmarks/benchmark_gemm.py --mnkl 512,7168,2048,256 \
@@ -17,18 +18,17 @@ Usage (dense):
 
 Usage (blockscaled MXFP8, with cuBLAS comparison):
     python benchmarks/benchmark_gemm.py --mnkl 4096,4096,4096,1 \
-        --blockscaled --ab_dtype Float8E4M3FN --sf_dtype Float8E8M0FNU \
-        --sf_vec_size 32 --init quant --compare_cublas
+        --ab_dtype Float8E4M3FN --sf_dtype Float8E8M0FNU --sf_vec_size 32
 
 Usage (blockscaled MXFP4):
     python benchmarks/benchmark_gemm.py --mnkl 4096,4096,4096,1 \
-        --blockscaled --ab_dtype Float4E2M1FN --sf_dtype Float8E8M0FNU \
-        --sf_vec_size 32 --d_dtype Float32
+        --ab_dtype Float4E2M1FN --sf_dtype Float8E8M0FNU \
+        --sf_vec_size 32 --d_dtype BFloat16
 
 Usage (blockscaled NVFP4):
     python benchmarks/benchmark_gemm.py --mnkl 4096,4096,4096,1 \
-        --blockscaled --ab_dtype Float4E2M1FN --sf_dtype Float8E4M3FN \
-        --sf_vec_size 16 --d_dtype Float32
+        --ab_dtype Float4E2M1FN --sf_dtype Float8E4M3FN \
+        --sf_vec_size 16 --d_dtype BFloat16
 """
 
 
