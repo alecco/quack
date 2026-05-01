@@ -1,4 +1,5 @@
 import argparse
+import os
 import time
 
 import torch
@@ -29,6 +30,13 @@ Usage (blockscaled NVFP4):
     python benchmarks/benchmark_gemm.py --mnkl 4096,4096,4096,1 \
         --ab_dtype Float4E2M1FN --sf_dtype Float8E4M3FN \
         --sf_vec_size 16 --d_dtype BFloat16
+
+Usage (SM120 packed-LDSM NVFP4 performance path):
+    QUACK_SM120_BLOCKSCALED_PACKED_LDSM=1 CUTE_DSL_ARCH=sm_120a \
+    python benchmarks/benchmark_gemm.py --mnkl 4096,4096,4096,1 \
+        --tile_shape_mnk 64,64,128 --cluster_shape_mnk 1,1,1 \
+        --ab_dtype Float4E2M1FN --sf_dtype Float8E4M3FN \
+        --sf_vec_size 16 --d_dtype BFloat16 --skip_ref_check
 """
 
 
@@ -261,6 +269,18 @@ def _run_blockscaled(args):
     mma_tiler_for_validation = (
         tuple(mma_tiler_mnk) if len(mma_tiler_mnk) == 3 or sm_major != 12 else (*mma_tiler_mnk, 64)
     )
+    if (
+        sm_major == 12
+        and len(mma_tiler_for_validation) == 3
+        and mma_tiler_for_validation[2] == 128
+        and os.environ.get("QUACK_SM120_BLOCKSCALED_PACKED_LDSM") != "1"
+    ):
+        raise NotImplementedError(
+            "SM120 blockscaled tile_K=128 requires the packed ldmatrix path. "
+            "Set QUACK_SM120_BLOCKSCALED_PACKED_LDSM=1, for example:\n"
+            "  QUACK_SM120_BLOCKSCALED_PACKED_LDSM=1 CUTE_DSL_ARCH=sm_120a "
+            "python benchmarks/benchmark_gemm.py --tile_shape_mnk 64,64,128 ..."
+        )
     if not GemmBlockscaledCls.can_implement_blockscaled(
         ab_dtype,
         sf_dtype,
@@ -659,5 +679,8 @@ def run(args):
 
 if __name__ == "__main__":
     args = parse_arguments()
-    run(args)
+    try:
+        run(args)
+    except (NotImplementedError, TypeError, ValueError) as exc:
+        raise SystemExit(f"benchmark_gemm.py: error: {exc}") from None
     print("PASS")
