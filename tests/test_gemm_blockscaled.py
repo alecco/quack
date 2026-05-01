@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -174,7 +176,7 @@ def test_blockscaled_validation():
     )
 
 
-def test_sm120_blockscaled_validation():
+def test_sm120_blockscaled_validation(monkeypatch):
     assert GemmDefaultSm120.can_implement_blockscaled(
         cutlass.Float4E2M1FN,
         cutlass.Float8E4M3FN,
@@ -190,6 +192,84 @@ def test_sm120_blockscaled_validation():
         "k",
         "n",
     )
+    assert not GemmDefaultSm120.can_implement_blockscaled(
+        cutlass.Float4E2M1FN,
+        cutlass.Float8E4M3FN,
+        16,
+        cutlass.BFloat16,
+        (64, 64, 128),
+        (1, 1),
+        128,
+        128,
+        128,
+        1,
+        "k",
+        "k",
+        "n",
+    )
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    assert GemmDefaultSm120.can_implement_blockscaled(
+        cutlass.Float4E2M1FN,
+        cutlass.Float8E4M3FN,
+        16,
+        cutlass.BFloat16,
+        (64, 64, 64),
+        (1, 1),
+        128,
+        128,
+        64,
+        1,
+        "k",
+        "k",
+        "n",
+    )
+    assert GemmDefaultSm120.can_implement_blockscaled(
+        cutlass.Float4E2M1FN,
+        cutlass.Float8E4M3FN,
+        16,
+        cutlass.BFloat16,
+        (64, 64, 128),
+        (1, 1),
+        128,
+        128,
+        128,
+        1,
+        "k",
+        "k",
+        "n",
+    )
+    for tile_shape in ((128, 128, 128), (64, 128, 128), (128, 64, 128)):
+        assert not GemmDefaultSm120.can_implement_blockscaled(
+            cutlass.Float4E2M1FN,
+            cutlass.Float8E4M3FN,
+            16,
+            cutlass.BFloat16,
+            tile_shape,
+            (1, 1),
+            256,
+            256,
+            128,
+            1,
+            "k",
+            "k",
+            "n",
+        )
+    for tile_shape in ((64, 128, 64), (128, 64, 64)):
+        assert not GemmDefaultSm120.can_implement_blockscaled(
+            cutlass.Float4E2M1FN,
+            cutlass.Float8E4M3FN,
+            16,
+            cutlass.BFloat16,
+            tile_shape,
+            (1, 1),
+            256,
+            256,
+            64,
+            1,
+            "k",
+            "k",
+            "n",
+        )
     assert GemmDefaultSm120.can_implement_blockscaled(
         cutlass.Float4E2M1FN,
         cutlass.Float8E8M0FNU,
@@ -200,6 +280,21 @@ def test_sm120_blockscaled_validation():
         256,
         256,
         128,
+        1,
+        "k",
+        "k",
+        "n",
+    )
+    assert not GemmDefaultSm120.can_implement_blockscaled(
+        cutlass.Float4E2M1FN,
+        cutlass.Float8E4M3FN,
+        16,
+        cutlass.BFloat16,
+        (32, 64, 64),
+        (1, 1),
+        128,
+        128,
+        64,
         1,
         "k",
         "k",
@@ -399,6 +494,78 @@ def test_sm120_blockscaled_class_call_validation():
             None,
             None,
         )
+
+
+@pytest.mark.parametrize("tile_shape", [(64, 128, 64), (128, 64, 64)])
+def test_sm120_blockscaled_class_call_rejects_unadvertised_tile_shapes(tile_shape):
+    m = n = 128
+    k = 64
+    l = 1
+    gemm = GemmDefaultSm120(
+        cutlass.Float32,
+        cutlass.Float4E2M1FN,
+        tile_shape,
+        (1, 1, 1),
+        is_persistent=False,
+        sf_vec_size=16,
+        sf_dtype=cutlass.Float8E4M3FN,
+    )
+    mA = fake_tensor(cutlass.Float4E2M1FN, (m, k, l), leading_dim=1, divisibility=4)
+    mB = fake_tensor(cutlass.Float4E2M1FN, (n, k, l), leading_dim=1, divisibility=4)
+    mD = fake_tensor(cutlass.BFloat16, (m, n, l), leading_dim=1, divisibility=8)
+    mSFA = fake_tensor(cutlass.Float8E4M3FN, (m, 16, l), leading_dim=1, divisibility=4)
+    mSFB = fake_tensor(cutlass.Float8E4M3FN, (n, 16, l), leading_dim=1, divisibility=4)
+
+    with pytest.raises(NotImplementedError, match="supports tile shapes"):
+        gemm._validate_blockscaled_call(
+            mA,
+            mB,
+            mD,
+            None,
+            mSFA,
+            mSFB,
+            gemm.EpilogueArguments(),
+            None,
+            None,
+            None,
+        )
+
+
+def test_sm120_blockscaled_packed_env_keeps_128x128x64_class_call(monkeypatch):
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 64
+    l = 1
+    gemm = GemmDefaultSm120(
+        cutlass.Float32,
+        cutlass.Float4E2M1FN,
+        (128, 128, 64),
+        (1, 1, 1),
+        is_persistent=False,
+        sf_vec_size=16,
+        sf_dtype=cutlass.Float8E4M3FN,
+    )
+    mA = fake_tensor(cutlass.Float4E2M1FN, (m, k, l), leading_dim=1, divisibility=4)
+    mB = fake_tensor(cutlass.Float4E2M1FN, (n, k, l), leading_dim=1, divisibility=4)
+    mD = fake_tensor(cutlass.BFloat16, (m, n, l), leading_dim=1, divisibility=8)
+    mSFA = fake_tensor(cutlass.Float8E4M3FN, (m, 16, l), leading_dim=1, divisibility=4)
+    mSFB = fake_tensor(cutlass.Float8E4M3FN, (n, 16, l), leading_dim=1, divisibility=4)
+
+    assert (
+        gemm._validate_blockscaled_call(
+            mA,
+            mB,
+            mD,
+            None,
+            mSFA,
+            mSFB,
+            gemm.EpilogueArguments(),
+            None,
+            None,
+            None,
+        )
+        == VarlenArguments()
+    )
 
 
 @pytest.mark.parametrize(
@@ -728,7 +895,18 @@ def _make_sm120_scales(mn, k, sf_vec_size, sf_dtype, row_or_col_sensitive=True):
     return scales
 
 
-def _compile_sm120_blockscaled_gemm(ab_dtype, sf_dtype, sf_vec_size, m, n, k, mA, mB):
+def _compile_sm120_blockscaled_gemm(
+    ab_dtype,
+    sf_dtype,
+    sf_vec_size,
+    m,
+    n,
+    k,
+    mA,
+    mB,
+    tile_shape_mn=(128, 128),
+    compile_options="--enable-tvm-ffi",
+):
     l = 1
     _, mD = create_blockscaled_operand_tensor(l, m, n, False, cutlass.BFloat16, init="empty")
     mSFA = _make_sm120_scales(m, k, sf_vec_size, sf_dtype)
@@ -738,15 +916,29 @@ def _compile_sm120_blockscaled_gemm(ab_dtype, sf_dtype, sf_vec_size, m, n, k, mA
         sf_dtype,
         sf_vec_size,
         cutlass.BFloat16,
-        (128, 128),
+        tile_shape_mn,
         (1, 1),
         mA,
         mB,
         mD,
         mSFA,
         mSFB,
+        compile_options=compile_options,
     )
     return compiled, (mA, mB, mD, mSFA, mSFB)
+
+
+def _compiled_ptx_text(compiled) -> str:
+    ptx = getattr(compiled, "__ptx__", None)
+    if isinstance(ptx, bytes):
+        return ptx.decode("utf-8", errors="replace")
+    if isinstance(ptx, str):
+        if "\n" not in ptx and len(ptx) < 4096:
+            path = Path(ptx)
+            if path.exists():
+                return path.read_text(errors="replace")
+        return ptx
+    raise AssertionError("compiled kernel did not expose PTX")
 
 
 @pytest.mark.parametrize(
@@ -775,6 +967,36 @@ def test_sm120_blockscaled_scale_correctness(sf_dtype, sf_vec_size, m, n, k):
     )
     err = (d_torch.float() - ref).abs().max().item()
     assert err < 1e-1, f"max_err={err}"
+
+
+def test_sm120_blockscaled_scale_correctness_64x64_tile():
+    _skip_if_not_sm120()
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64),
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
 
 
 def test_sm120_blockscaled_k_loop_accumulates_before_bf16_store():
@@ -843,6 +1065,331 @@ def test_sm120_blockscaled_asymmetric_fp4_and_scale_page_crossing():
     )
     err = (d_torch.float() - ref.float()).abs().max().item()
     assert err < 1e-1, f"max_err={err}"
+
+
+def test_sm120_blockscaled_packed_ldsm_scale_correctness_64x64_tile(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64),
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+
+
+def test_sm120_blockscaled_packed_ldsm_asymmetric_fp4_and_scale_page_crossing(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 320
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    ks = torch.arange(k, device="cuda")[None, :]
+    a_codes = torch.where(
+        (ks % 4) < 2,
+        torch.tensor(0x2, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x4, device="cuda", dtype=torch.uint8),
+    ).expand(m, k)
+    b_codes = torch.where(
+        (ks % 8) < 4,
+        torch.tensor(0x3, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x5, device="cuda", dtype=torch.uint8),
+    ).expand(n, k)
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64),
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+
+
+def test_sm120_blockscaled_packed_ldsm_ptx_regression(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    compiled, _ = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        _pack_sm120_fp4_codes(a_codes),
+        _pack_sm120_fp4_codes(b_codes),
+        tile_shape_mn=(64, 64),
+        compile_options="--enable-tvm-ffi --keep-ptx",
+    )
+    ptx = _compiled_ptx_text(compiled)
+    assert "ldmatrix.sync.aligned.m8n8.x4.shared.b16" in ptx
+    assert "mma.sync.aligned" in ptx
+    assert "m16n8k64" in ptx
+    assert "kind::mxf4nvf4" in ptx
+    assert "cp.async.bulk.tensor.2d.shared::cta.global.tile" in ptx
+    assert "b4x16_p64" not in ptx
+    assert "ldmatrix.sync.aligned.m8n16" not in ptx
+    assert ".multicast" not in ptx
+    assert "shared::cluster" not in ptx
+
+
+def test_sm120_blockscaled_packed_ldsm_scale_correctness_64x64x128_tile(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64, 128),
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+
+
+def test_sm120_blockscaled_packed_ldsm_k128_uses_second_scale_offset(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64, 128),
+    )
+    _, _, _, mSFA, mSFB = args
+    mSFA[:, :4, 0] = torch.tensor(1.0, device="cuda", dtype=mSFA.dtype)
+    mSFA[:, 4:8, 0] = torch.tensor(2.0, device="cuda", dtype=mSFA.dtype)
+    mSFB[:, :8, 0] = torch.tensor(1.0, device="cuda", dtype=mSFB.dtype)
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+    assert torch.all(d_torch.float() == torch.tensor(192.0, device="cuda"))
+
+
+@pytest.mark.parametrize(
+    "tile_shape_mn,k",
+    [
+        ((64, 64), 128),
+        ((64, 64, 128), 640),
+    ],
+)
+def test_sm120_blockscaled_packed_ldsm_mxfp4_scale_correctness(monkeypatch, tile_shape_mn, k):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    sf_vec_size = 32
+    sf_dtype = cutlass.Float8E8M0FNU
+    rows = torch.arange(m, device="cuda")[:, None]
+    cols = torch.arange(n, device="cuda")[:, None]
+    ks = torch.arange(k, device="cuda")[None, :]
+    a_codes = torch.where(
+        ((rows + ks) % 4) < 2,
+        torch.tensor(0x2, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x4, device="cuda", dtype=torch.uint8),
+    )
+    b_codes = torch.where(
+        ((cols + ks * 3) % 8) < 4,
+        torch.tensor(0x3, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x5, device="cuda", dtype=torch.uint8),
+    )
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=tile_shape_mn,
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    logical_cols = k // sf_vec_size
+    if k == 640:
+        assert mSFA.shape[1] == 32
+        assert torch.any(mSFA[:, logical_cols:, :].float() != 1.0)
+        assert torch.any(mSFB[:, logical_cols:, :].float() != 1.0)
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+
+
+def test_sm120_blockscaled_packed_ldsm_asymmetric_fp4_k128_page_crossing(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 384
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    rows = torch.arange(m, device="cuda")[:, None]
+    cols = torch.arange(n, device="cuda")[:, None]
+    ks = torch.arange(k, device="cuda")[None, :]
+    a_codes = torch.where(
+        ((rows + ks) % 4) < 2,
+        torch.tensor(0x2, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x4, device="cuda", dtype=torch.uint8),
+    )
+    b_codes = torch.where(
+        ((cols * 3 + ks) % 8) < 4,
+        torch.tensor(0x3, device="cuda", dtype=torch.uint8),
+        torch.tensor(0x5, device="cuda", dtype=torch.uint8),
+    )
+    mA = _pack_sm120_fp4_codes(a_codes)
+    mB = _pack_sm120_fp4_codes(b_codes)
+    compiled, args = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        mA,
+        mB,
+        tile_shape_mn=(64, 64, 128),
+    )
+    _run_blockscaled_gemm(compiled, args)
+
+    _, _, d_torch, mSFA, mSFB = args
+    logical_cols = k // sf_vec_size
+    assert mSFA.shape[1] == 32
+    assert torch.any(mSFA[:, logical_cols:, :].float() != 1.0)
+    ref = _sm120_fp4_blockscaled_reference(a_codes, b_codes, mSFA, mSFB, sf_vec_size).to(
+        torch.bfloat16
+    )
+    torch.testing.assert_close(d_torch.float(), ref.float(), rtol=0, atol=0)
+
+
+def test_sm120_blockscaled_packed_ldsm_ptx_regression_64x64x128(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.setenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", "1")
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    compiled, _ = _compile_sm120_blockscaled_gemm(
+        cutlass.Float4E2M1FN,
+        sf_dtype,
+        sf_vec_size,
+        m,
+        n,
+        k,
+        _pack_sm120_fp4_codes(a_codes),
+        _pack_sm120_fp4_codes(b_codes),
+        tile_shape_mn=(64, 64, 128),
+        compile_options="--enable-tvm-ffi --keep-ptx",
+    )
+    ptx = _compiled_ptx_text(compiled)
+    assert "ldmatrix.sync.aligned.m8n8.x4.shared.b16" in ptx
+    assert "mma.sync.aligned" in ptx
+    assert "m16n8k64" in ptx
+    assert "kind::mxf4nvf4" in ptx
+    assert "cp.async.bulk.tensor.2d.shared::cta.global.tile" in ptx
+    assert "b4x16_p64" not in ptx
+    assert "ldmatrix.sync.aligned.m8n16" not in ptx
+    assert ".multicast" not in ptx
+    assert "shared::cluster" not in ptx
+
+
+def test_sm120_blockscaled_tile_k128_requires_packed_ldsm(monkeypatch):
+    _skip_if_not_sm120()
+    monkeypatch.delenv("QUACK_SM120_BLOCKSCALED_PACKED_LDSM", raising=False)
+    m = n = 128
+    k = 128
+    sf_vec_size = 16
+    sf_dtype = cutlass.Float8E4M3FN
+    a_codes = torch.full((m, k), 0x2, device="cuda", dtype=torch.uint8)
+    b_codes = torch.full((n, k), 0x2, device="cuda", dtype=torch.uint8)
+    with pytest.raises(NotImplementedError, match="tile_K=128"):
+        _compile_sm120_blockscaled_gemm(
+            cutlass.Float4E2M1FN,
+            sf_dtype,
+            sf_vec_size,
+            m,
+            n,
+            k,
+            _pack_sm120_fp4_codes(a_codes),
+            _pack_sm120_fp4_codes(b_codes),
+            tile_shape_mn=(64, 64, 128),
+        )
 
 
 def test_sm120_blockscaled_rejects_compact_scale_layout():

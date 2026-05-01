@@ -1,6 +1,7 @@
 # Copyright (c) 2026, Tri Dao.
 
 import itertools
+import os
 from functools import partial
 from typing import Callable, Optional, Type, Tuple
 
@@ -655,6 +656,7 @@ def compile_blockscaled_gemm_tvm_ffi(
     use_clc_persistence: bool = True,
     varlen_m: bool = False,
     varlen_k: bool = False,
+    compile_options: str = "--enable-tvm-ffi",
 ) -> Callable:
     """Compile the blockscaled GEMM.
 
@@ -674,8 +676,12 @@ def compile_blockscaled_gemm_tvm_ffi(
     if device_capacity[0] == 12:
         if varlen_m or varlen_k:
             raise NotImplementedError("SM120 blockscaled GEMM does not support varlen")
-        if mma_tiler_k != 64:
-            raise NotImplementedError("SM120 blockscaled GEMM requires tile_K=64")
+        if mma_tiler_k not in (64, 128):
+            raise NotImplementedError("SM120 blockscaled GEMM requires tile_K in {64,128}")
+        if mma_tiler_k == 128 and os.environ.get("QUACK_SM120_BLOCKSCALED_PACKED_LDSM") != "1":
+            raise NotImplementedError(
+                "SM120 blockscaled tile_K=128 requires QUACK_SM120_BLOCKSCALED_PACKED_LDSM=1"
+            )
         if len(mA.shape) != 3 or len(mB.shape) != 3 or len(mD.shape) != 3:
             raise ValueError("SM120 blockscaled GEMM requires rank-3 A/B/D tensors")
         logical_k = mA.shape[1] * (2 if ab_dtype is cutlass.Float4E2M1FN else 1)
@@ -691,7 +697,7 @@ def compile_blockscaled_gemm_tvm_ffi(
             sf_dtype,
             sf_vec_size,
             d_dtype,
-            (*mma_tiler_mn_only, 64),
+            (*mma_tiler_mn_only, mma_tiler_k),
             cluster_shape_mn,
             mA.shape[0],
             mB.shape[0],
@@ -709,7 +715,7 @@ def compile_blockscaled_gemm_tvm_ffi(
         gemm = GemmDefaultSm120(
             cutlass.Float32,
             ab_dtype,
-            (*mma_tiler_mn_only, 64),
+            (*mma_tiler_mn_only, mma_tiler_k),
             (*cluster_shape_mn, 1),
             is_persistent=False,
             sf_vec_size=sf_vec_size,
@@ -824,7 +830,7 @@ def compile_blockscaled_gemm_tvm_ffi(
         _make_compile_tensor_like(mSFB, sf_dtype, dynamic_layout=True),
         varlen_args_fake,
         stream,
-        options="--enable-tvm-ffi",
+        options=compile_options,
     )
 
     if varlen_m or varlen_k:
@@ -839,6 +845,10 @@ def compile_blockscaled_gemm_tvm_ffi(
 
         def run(a, b, d, sfa, sfb):
             compiled(a, b, d, sfa, sfb, VarlenArguments())
+
+    for attr in ("__ptx__", "__cubin__"):
+        if hasattr(compiled, attr):
+            setattr(run, attr, getattr(compiled, attr))
 
     return run
 
